@@ -117,8 +117,8 @@ func (b *kubeVirtBackend) Connect(ctx context.Context, target Target) (io.ReadWr
 	}
 
 	wsLogger := b.logger.With(slog.String("component", "backend_ws"))
-	dialOpts.OnPingReceived = PingReceivedHandler(wsLogger, ctx)
-	dialOpts.OnPongReceived = PongReceivedHandler(wsLogger, ctx)
+	dialOpts.OnPingReceived = PingReceivedHandler(wsLogger)
+	dialOpts.OnPongReceived = PongReceivedHandler(wsLogger)
 
 	conn, _, err := websocket.Dial(ctx, target.BackendURI, dialOpts)
 	if err != nil {
