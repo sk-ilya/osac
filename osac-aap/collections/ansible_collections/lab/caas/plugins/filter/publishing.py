@@ -23,7 +23,7 @@ def validate_profile(profile, order, action):
         raise ValueError("ClusterOrder identity is required")
     IPv4Address(profile["api_address"])
     port = profile["api_port"]
-    if type(port) is not int or not 30000 <= port <= 32767:
+    if not isinstance(port, int) or isinstance(port, bool) or not 30000 <= port <= 32767:
         raise ValueError("API port must be in the standard NodePort range")
     for key in ("worker_namespace", "worker_name", "ingress_service"):
         if not isinstance(profile[key], str) or not re.fullmatch(r"[a-z0-9](?:[-a-z0-9]*[a-z0-9])?", profile[key]) or len(profile[key]) > 63:

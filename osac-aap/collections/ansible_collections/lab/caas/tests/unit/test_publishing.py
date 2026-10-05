@@ -59,6 +59,14 @@ class PublishingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             p.validate_profile(cfg, order(), "create")
 
+    def test_accepts_ansible_tagged_integer_values(self):
+        class TaggedInt(int):
+            pass
+
+        cfg = profile()
+        cfg["api_port"] = TaggedInt(30443)
+        self.assertEqual(p.validate_profile(cfg, order(), "create")["api_port"], 30443)
+
     def test_rejects_unknown_profile_fields(self):
         cfg = profile()
         cfg["token"] = "placeholder"
