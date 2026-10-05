@@ -39,6 +39,13 @@
       vars:
         cluster_working_namespace_cluster_order_name: "{{ cluster_order_name }}"
 
+    - name: Configure provider publishing for the CI cluster template
+      when: template_id == 'osac.templates.ocp_ci_small'
+      ansible.builtin.include_role:
+        name: lab.caas.profile
+      vars:
+        lab_caas_action: create
+
   tasks:
     - name: Acquire cluster lock
       ansible.builtin.include_role:

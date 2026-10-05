@@ -1,0 +1,26 @@
+---
+- name: Read the order application Route
+  kubernetes.core.k8s_info:
+    api_version: route.openshift.io/v1
+    kind: Route
+    namespace: "{{ lab_caas_profile.worker_namespace }}"
+    name: "{{ cluster_order.metadata.name }}-apps"
+  register: lab_caas_existing_route
+
+- name: Require the order and tenant to own the Route
+  ansible.builtin.assert:
+    that:
+      - lab_caas_existing_route.resources | lab.caas.check_owned(cluster_order)
+
+- name: Delete the owned publishing Route
+  when: lab_caas_existing_route.resources | length == 1
+  kubernetes.core.k8s:
+    state: absent
+    api_version: route.openshift.io/v1
+    kind: Route
+    namespace: "{{ lab_caas_profile.worker_namespace }}"
+    name: "{{ cluster_order.metadata.name }}-apps"
+    delete_options:
+      preconditions:
+        uid: "{{ lab_caas_existing_route.resources[0].metadata.uid }}"
+        resourceVersion: "{{ lab_caas_existing_route.resources[0].metadata.resourceVersion }}"

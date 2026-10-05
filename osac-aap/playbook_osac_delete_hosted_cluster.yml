@@ -21,6 +21,13 @@
       vars:
         cluster_working_namespace_cluster_order_name: "{{ cluster_order.metadata.name }}"
 
+    - name: Configure provider cleanup for the CI cluster template
+      when: template_id == 'osac.templates.ocp_ci_small'
+      ansible.builtin.include_role:
+        name: lab.caas.profile
+      vars:
+        lab_caas_action: delete
+
   tasks:
     - name: Call the selected template
       ansible.builtin.include_role:

@@ -1,0 +1,5 @@
+---
+- name: Select NodePort API publishing before HostedCluster creation
+  ansible.builtin.set_fact:
+    hosted_cluster_definition: >-
+      {{ hosted_cluster_definition | lab.caas.nodeport_definition(lab_caas_profile, cluster_order) }}

@@ -1,0 +1,5 @@
+FROM ghcr.io/osac-project/osac-aap@sha256:f5324922147d4d6150bfe6cf86fdd1680dc110802a01abd1309fdc4da0dfa550
+ARG SOURCE_REVISION
+LABEL org.opencontainers.image.source="https://github.com/sk-ilya/osac"
+LABEL org.opencontainers.image.revision="$SOURCE_REVISION"
+COPY --chown=1000:0 collections/ansible_collections/lab/caas /usr/share/ansible/collections/ansible_collections/lab/caas

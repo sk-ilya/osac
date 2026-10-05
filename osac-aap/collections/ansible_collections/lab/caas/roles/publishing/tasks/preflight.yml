@@ -1,0 +1,118 @@
+---
+- name: Require the configured hosted domain
+  ansible.builtin.assert:
+    that:
+      - hosted_cluster_base_domain == lab_caas_profile.base_domain
+      - external_access_base_domain == lab_caas_profile.base_domain
+      - cluster_order.spec.nodeRequests | length == 1
+      - cluster_order.spec.nodeRequests[0].numberOfNodes | int == 1
+      - cluster_order.spec.nodeRequests[0].resourceClass == 'ci-worker'
+    fail_msg: The provider profile supports the governed single-worker CI lab only
+
+- name: Read hosting cluster nodes
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Node
+  register: lab_caas_nodes
+
+- name: Require the API address to belong to the single hosting node
+  ansible.builtin.assert:
+    that:
+      - lab_caas_nodes.resources | length == 1
+      - >-
+        lab_caas_nodes.resources[0].status.addresses
+        | selectattr('type', 'equalto', 'InternalIP')
+        | selectattr('address', 'equalto', lab_caas_profile.api_address) | list | length == 1
+
+- name: Read eligible CI inventory Agents
+  kubernetes.core.k8s_info:
+    api_version: agent-install.openshift.io/v1beta1
+    kind: Agent
+    namespace: hardware-inventory
+    label_selectors:
+      - "{{ agent_resource_class_label }}=ci-worker"
+  register: lab_caas_agents
+
+- name: Require the intended worker to be the only eligible CI Agent
+  ansible.builtin.assert:
+    that:
+      - lab_caas_agents.resources | length == 1
+      - >-
+        lab_caas_agents.resources[0].status.inventory.interfaces
+        | selectattr('macAddress', 'equalto', lab_caas_profile.worker_mac) | list | length == 1
+      - >-
+        lab_caas_agents.resources[0].metadata.labels.get(cluster_order_label,
+        cluster_order.metadata.name) == cluster_order.metadata.name
+    fail_msg: Resolve inventory eligibility before provisioning the single-worker lab
+
+- name: Read the inventory VM ownership
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    namespace: "{{ lab_caas_profile.worker_namespace }}"
+    name: "{{ lab_caas_profile.worker_name }}"
+  register: lab_caas_vm
+
+- name: Require the owned inventory VM
+  ansible.builtin.assert:
+    that:
+      - lab_caas_vm.resources | length == 1
+      - lab_caas_vm.resources[0].metadata.annotations['deployment.osac.local/worker'] == lab_caas_profile.worker_name
+
+- name: Read the inventory VM instance
+  kubernetes.core.k8s_info:
+    api_version: kubevirt.io/v1
+    kind: VirtualMachineInstance
+    namespace: "{{ lab_caas_profile.worker_namespace }}"
+    name: "{{ lab_caas_profile.worker_name }}"
+  register: lab_caas_vmi
+
+- name: Require the owned running worker with the expected interface
+  ansible.builtin.assert:
+    that:
+      - lab_caas_vmi.resources | length == 1
+      - lab_caas_vmi.resources[0].metadata.labels['deployment.osac.local/worker'] == lab_caas_profile.worker_name
+      - >-
+        lab_caas_vmi.resources[0].metadata.ownerReferences
+        | selectattr('uid', 'equalto', lab_caas_vm.resources[0].metadata.uid) | list | length == 1
+      - lab_caas_vmi.resources[0].status.phase == 'Running'
+      - >-
+        lab_caas_vmi.resources[0].status.conditions
+        | selectattr('type', 'equalto', 'Ready')
+        | selectattr('status', 'equalto', 'True') | list | length == 1
+      - >-
+        lab_caas_vmi.resources[0].spec.domain.devices.interfaces
+        | selectattr('macAddress', 'defined')
+        | selectattr('macAddress', 'equalto', lab_caas_profile.worker_mac) | list | length == 1
+
+- name: Read the provider ingress Service
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: "{{ lab_caas_profile.worker_namespace }}"
+    name: "{{ lab_caas_profile.ingress_service }}"
+  register: lab_caas_ingress_service
+
+- name: Require the owned HTTPS worker Service
+  ansible.builtin.assert:
+    that:
+      - lab_caas_ingress_service.resources | length == 1
+      - lab_caas_ingress_service.resources[0].metadata.annotations['deployment.osac.local/worker'] == lab_caas_profile.worker_name
+      - lab_caas_ingress_service.resources[0].spec.selector['deployment.osac.local/worker'] == lab_caas_profile.worker_name
+      - >-
+        lab_caas_ingress_service.resources[0].spec.ports
+        | selectattr('name', 'equalto', 'https')
+        | selectattr('targetPort', 'equalto', 443) | list | length == 1
+
+- name: Read allocated Service ports
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+  register: lab_caas_services
+
+- name: Reject a conflicting NodePort allocation
+  ansible.builtin.assert:
+    that:
+      - >-
+        lab_caas_services.resources | lab.caas.check_port(
+          lab_caas_profile, cluster_working_namespace ~ '-' ~ cluster_order.metadata.name)

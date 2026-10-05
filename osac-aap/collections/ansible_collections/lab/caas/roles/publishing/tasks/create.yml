@@ -1,0 +1,74 @@
+---
+- name: Wait for the real NodePort API Service
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Service
+    namespace: "{{ cluster_working_namespace }}-{{ cluster_order.metadata.name }}"
+    name: kube-apiserver
+  register: lab_caas_api_service
+  until:
+    - lab_caas_api_service.resources | length == 1
+    - lab_caas_api_service.resources[0] | lab.caas.api_service_ready(lab_caas_profile)
+  retries: 360
+  delay: 5
+
+- name: Read existing application publishing Route
+  kubernetes.core.k8s_info:
+    api_version: route.openshift.io/v1
+    kind: Route
+    namespace: "{{ lab_caas_profile.worker_namespace }}"
+    name: "{{ cluster_order.metadata.name }}-apps"
+  register: lab_caas_existing_route
+
+- name: Reject application Route ownership conflicts
+  ansible.builtin.assert:
+    that:
+      - lab_caas_existing_route.resources | lab.caas.check_owned(cluster_order)
+
+- name: Build the owned application Route
+  ansible.builtin.set_fact:
+    lab_caas_apps_route: "{{ lab_caas_profile | lab.caas.route_definition(cluster_order) }}"
+
+- name: Guard updates with the observed resource version
+  when: lab_caas_existing_route.resources | length == 1
+  ansible.builtin.set_fact:
+    lab_caas_apps_route: >-
+      {{ lab_caas_apps_route | combine({'metadata': {'resourceVersion':
+         lab_caas_existing_route.resources[0].metadata.resourceVersion}}, recursive=true) }}
+
+- name: Publish guest HTTPS through the existing hub router
+  kubernetes.core.k8s:
+    state: present
+    definition: "{{ lab_caas_apps_route }}"
+
+- name: Wait for wildcard Route admission
+  kubernetes.core.k8s_info:
+    api_version: route.openshift.io/v1
+    kind: Route
+    namespace: "{{ lab_caas_profile.worker_namespace }}"
+    name: "{{ cluster_order.metadata.name }}-apps"
+  register: lab_caas_admitted_route
+  until:
+    - >-
+      lab_caas_admitted_route.resources[0].status.ingress | default([])
+      | map(attribute='conditions') | flatten
+      | selectattr('type', 'equalto', 'Admitted')
+      | selectattr('status', 'equalto', 'True') | list | length > 0
+  retries: 60
+  delay: 5
+
+- name: Retrieve the generated guest kubeconfig privately
+  ansible.builtin.include_role:
+    name: osac.service.retrieve_kubeconfig
+    apply:
+      no_log: true
+  vars:
+    retrieve_kubeconfig_namespace: "{{ cluster_working_namespace }}"
+    retrieve_kubeconfig_cluster_name: "{{ cluster_order.metadata.name }}"
+
+- name: Wait for guest network readiness through its real API
+  ansible.builtin.include_role:
+    name: osac.service.wait_for
+    tasks_from: wait_for_network_cluster_operator
+  vars:
+    wait_for_kubeconfig: "{{ admin_kubeconfig }}"

@@ -1,0 +1,41 @@
+---
+- name: Read provider publishing profile
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: ConfigMap
+    namespace: "{{ lookup('env', 'POD_NAMESPACE') }}"
+    name: caas-lab-profile
+  register: lab_caas_profile_resource
+
+- name: Require provider profile for the CI cluster template
+  ansible.builtin.assert:
+    that:
+      - lab_caas_profile_resource.resources | length == 1
+      - lab_caas_profile_resource.resources[0].data['profile.yaml'] is defined
+    fail_msg: Install and validate the provider profile before ordering a CI cluster
+
+- name: Validate provider scope and evidence
+  ansible.builtin.set_fact:
+    lab_caas_profile: >-
+      {{ lab_caas_profile_resource.resources[0].data['profile.yaml']
+         | from_yaml | lab.caas.validate_profile(cluster_order, lab_caas_action) }}
+
+- name: Select provider creation hooks
+  when: lab_caas_action == 'create'
+  ansible.builtin.set_fact:
+    install_step_pre_install_hook_override:
+      name: lab.caas.publishing
+      tasks_from: preflight.yml
+    hosted_cluster_modify_definition_hook:
+      name: lab.caas.publishing
+      tasks_from: definition.yml
+    install_step_external_access_override:
+      name: lab.caas.publishing
+      tasks_from: create.yml
+
+- name: Select provider deletion hook
+  when: lab_caas_action == 'delete'
+  ansible.builtin.set_fact:
+    delete_step_external_access_override:
+      name: lab.caas.publishing
+      tasks_from: delete.yml

@@ -1,0 +1,59 @@
+---
+- name: Verify provider filters and definition hook without a Kubernetes cluster
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    cluster_order:
+      metadata:
+        name: order-test
+        uid: order-uid
+        annotations:
+          osac.openshift.io/tenant: test-tenant
+    lab_caas_profile:
+      tenant: test-tenant
+      api_address: 192.0.2.10
+      api_port: 30443
+      base_domain: lab.example.test
+      worker_namespace: workers
+      worker_name: worker-1
+      worker_mac: "02:00:00:00:00:01"
+      ingress_service: worker-ingress
+      evidence:
+        nodeport_connectivity: true
+        guest_ingress: true
+        dns: true
+    hosted_cluster_definition:
+      metadata:
+        name: order-test
+      spec:
+        platform:
+          type: Agent
+        dns:
+          baseDomain: lab.example.test
+        services:
+          - service: APIServer
+            servicePublishingStrategy:
+              type: LoadBalancer
+          - service: OAuthServer
+            servicePublishingStrategy:
+              type: Route
+  tasks:
+    - name: Resolve the profile filter in the real Ansible loader
+      ansible.builtin.assert:
+        that:
+          - lab_caas_profile | lab.caas.validate_profile(cluster_order, 'create') == lab_caas_profile
+
+    - name: Run the actual HostedCluster definition hook
+      ansible.builtin.include_role:
+        name: lab.caas.publishing
+        tasks_from: definition.yml
+
+    - name: Verify API publishing and preservation of other services
+      ansible.builtin.assert:
+        that:
+          - hosted_cluster_definition.spec.services[0].servicePublishingStrategy.type == 'NodePort'
+          - hosted_cluster_definition.spec.services[0].servicePublishingStrategy.nodePort.port == 30443
+          - hosted_cluster_definition.spec.services[1].servicePublishingStrategy.type == 'Route'
+          - hosted_cluster_definition.metadata.annotations['osac.openshift.io/tenant'] == 'test-tenant'
+          - hosted_cluster_definition.metadata.annotations['deployment.osac.local/cluster-order-uid'] == 'order-uid'

@@ -1,0 +1,14 @@
+---
+namespace: lab
+name: caas
+version: 0.1.0
+readme: README.md
+authors:
+  - Ilya Skornyakov
+description: Provider-scoped Agent CaaS NodePort publishing for a single-worker lab
+license:
+  - Apache-2.0
+tags:
+  - infrastructure
+dependencies: {}
+repository: https://github.com/sk-ilya/osac
