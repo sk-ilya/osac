@@ -5,6 +5,9 @@ metadata:
     ansible_job: ''
 spec:
   serviceAccountName: {{ osac_sa_name }}
+{% if aap_ee_pull_secrets %}
+  imagePullSecrets: {{ aap_ee_pull_secrets | to_json }}
+{% endif %}
   affinity:
     podAntiAffinity:
       preferredDuringSchedulingIgnoredDuringExecution:
@@ -86,11 +89,13 @@ spec:
                   fieldRef:
                     apiVersion: v1
                     fieldPath: metadata.namespace
+{% if aap_fulfillment_service_ca_configmap %}
           - configMap:
-              name: openshift-service-ca.crt
+              name: {{ aap_fulfillment_service_ca_configmap }}
               items:
                 - key: service-ca.crt
                   path: service-ca.crt
+{% endif %}
         defaultMode: 420
     - name: agentless-net-inventory
       configMap:

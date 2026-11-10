@@ -12,6 +12,8 @@ aap_project_git_uri: "{{ lookup('env', 'AAP_PROJECT_GIT_URI', default='https://g
 aap_project_git_branch: "{{ lookup('env', 'AAP_PROJECT_GIT_BRANCH', default='main') }}"
 aap_project_archive_uri: "{{ lookup('env', 'AAP_PROJECT_ARCHIVE_URI', default=Undefined) }}"
 aap_ee_image: "{{ lookup('env', 'AAP_EE_IMAGE', default='ghcr.io/osac-project/osac-aap:latest') }}"
+aap_ee_pull_secrets: "{{ lookup('env', 'AAP_EE_PULL_SECRETS', default='[]') | from_json }}"
+aap_fulfillment_service_ca_configmap: "{{ lookup('env', 'AAP_FULFILLMENT_SERVICE_CA_CONFIGMAP', default='openshift-service-ca.crt') }}"
 aap_config_as_code_secret_name: "{{ lookup('env', 'AAP_CONFIG_AS_CODE_SECRET', default='config-as-code-ig') }}"
 osac_sa_name: "{{ lookup('env', 'AAP_OSAC_SERVICE_ACCOUNT', default='osac-sa') }}"
 # ansible.controller.execution_environment's own `pull` field (always /

@@ -1,0 +1,80 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  labels:
+    ansible_job: ''
+spec:
+  serviceAccountName: {{ osac_sa_name }}
+{% if aap_ee_pull_secrets %}
+  imagePullSecrets: {{ aap_ee_pull_secrets | to_json }}
+{% endif %}
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: ansible_job
+                  operator: Exists
+            topologyKey: kubernetes.io/hostname
+  containers:
+    - image: >-
+        registry.redhat.io/ansible-automation-platform-25/ee-supported-rhel8@sha256:d8400a472e769d0f3d591dafaad318522009c583b08e881c23b6d57a27cc10ed
+      name: worker
+      args:
+        - ansible-runner
+        - worker
+        - '--private-data-dir=/runner'
+      volumeMounts:
+        - name: kube-api-access
+          mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+          readOnly: true
+        - name: os-clouds
+          mountPath: /etc/openstack
+          readOnly: true
+      env:
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: OS_CLIENT_CONFIG_FILE
+          value: /etc/openstack/clouds.yaml
+      envFrom:
+        - secretRef:
+            name: bare-metal-fulfillment-ig
+            optional: true
+  volumes:
+    - name: kube-api-access
+      projected:
+        sources:
+          - serviceAccountToken:
+              path: token
+              expirationSeconds: 3600
+          - configMap:
+              name: kube-root-ca.crt
+              items:
+                - key: ca.crt
+                  path: ca.crt
+          - downwardAPI:
+              items:
+                - path: namespace
+                  fieldRef:
+                    apiVersion: v1
+                    fieldPath: metadata.namespace
+{% if aap_fulfillment_service_ca_configmap %}
+          - configMap:
+              name: {{ aap_fulfillment_service_ca_configmap }}
+              items:
+                - key: service-ca.crt
+                  path: service-ca.crt
+{% endif %}
+        defaultMode: 420
+    - name: os-clouds
+      secret:
+        secretName: osac-os-clouds
+        items:
+          - key: clouds.yaml
+            path: clouds.yaml
+        defaultMode: 420
+        optional: true
