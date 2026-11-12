@@ -1,69 +1,23 @@
-name: Integration Tests
+---
+name: CaaS integration repetitions
+run-name: CaaS IT ${{ inputs.iteration }}/100 · ad2f71cfc
 
-# The pull request and merge queue runs of the integration tests are legs of the matrix in ci.yml (see .github/ci-tests.yml and
-# tests.yml). This workflow runs EVERY integration leg on a schedule, by hand and from the nightly build.
 on:  # yamllint disable-line rule:truthy
   workflow_dispatch:
-  # 2x/day (every 12h). Offset 47 minutes past the hour, not on the hour --
-  # GitHub Actions' shared cron scheduler queues everyone's on-the-hour
-  # schedules together and can delay/drop them under load (see
-  # osac-test-infra's e2e-caas-netris-caller.yml for the same reasoning).
-  # Staggered from the other periodic workflows in this repo too, so they
-  # don't all land on the same offset simultaneously.
-  schedule:
-    - cron: '47 */12 * * *'
-  # Invoked as a parallel "box" by nightly-build.yaml.
-  workflow_call:
-    # Flake detection passes a fixed commit and a label appended to saved log names.
-    # Empty defaults keep other callers' checkout and log names unchanged.
     inputs:
-      commit:
-        description: Commit to check out; empty uses the triggering commit
+      iteration:
+        description: Repetition number
+        required: true
         type: string
-        default: ""
-      artifact_suffix:
-        description: Suffix for diagnostic artifacts when repeating tests
-        type: string
-        default: ""
 
 permissions:
   contents: read
 
 jobs:
-  plan:
-    name: Plan
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    outputs:
-      tests: ${{ steps.legs.outputs.tests }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          ref: ${{ inputs.commit }}
-          sparse-checkout: .github/ci-tests.yml
-          persist-credentials: false
-      - name: Every integration leg
-        id: legs
-        run: |
-          set -euo pipefail
-          tests=$(yq -o=json -I=0 '.' .github/ci-tests.yml | jq -c '[ .[] | select(.group == "integration") ]')
-          echo "tests=${tests}" >> "$GITHUB_OUTPUT"
-
-  tests:
-    name: ${{ matrix.id }}
-    needs: plan
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.plan.outputs.tests) }}
-    permissions:
-      contents: read
+  caas:
     uses: ./.github/workflows/tests.yml
     with:
-      commit: ${{ inputs.commit || '' }}
-      kind: ${{ matrix.kind }}
-      dir: ${{ matrix.dir || '' }}
-      cmd: ${{ matrix.cmd || '' }}
-      timeout: ${{ matrix.timeout || 360 }}
-      artifact_suffix: ${{ inputs.artifact_suffix || '' }}
+      kind: it-caas
+      commit: ad2f71cfc770041ca98a79684104350ba3b54930
+      timeout: 120
+      artifact_suffix: -repeat-${{ inputs.iteration }}
