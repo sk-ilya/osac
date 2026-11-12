@@ -923,6 +923,8 @@ create_cluster osac-dev config.yaml {shlex.quote(str(self.directory / 'cluster.k
         installer.mkdir(parents=True)
         (module / "it").mkdir(parents=True)
         shutil.copy(INSTALLER / "Makefile", installer / "Makefile")
+        (installer / "scripts").mkdir()
+        shutil.copy(INSTALLER / "scripts/kind-images.mk", installer / "scripts/kind-images.mk")
         env = {key: value for key, value in self.env.items() if key != "FULFILLMENT_IT_REPORT_DIR"}
         phases = ["service-only", "networking-operator", "bmaas-disabled", "compute-storage"]
         cases = [("default", None), ("disabled", ""), ("relative", "../local-reports"),
@@ -965,6 +967,8 @@ create_cluster osac-dev config.yaml {shlex.quote(str(self.directory / 'cluster.k
         installer.mkdir(parents=True)
         (checkout / "fulfillment-service" / "it").mkdir(parents=True)
         shutil.copy(INSTALLER / "Makefile", installer / "Makefile")
+        (installer / "scripts").mkdir()
+        shutil.copy(INSTALLER / "scripts/kind-images.mk", installer / "scripts/kind-images.mk")
         result = subprocess.run(
             ["make", "--no-print-directory", "-n", "-C", str(installer), "test",
              "PLATFORM=kind", "PROFILE=dev", "NS=osac", "SUITE=fulfillment", "MAKE=true"],
@@ -981,6 +985,30 @@ create_cluster osac-dev config.yaml {shlex.quote(str(self.directory / 'cluster.k
         self.assertEqual(enabled, [["operator.enabled=false"], ["operator.enabled=true"],
                                    ["operator.enabled=false"], ["operator.enabled=true"]])
 
+    def test_caas_delegation_uses_its_fixed_environment(self):
+        result = subprocess.run(
+            ["make", "--no-print-directory", "-n", "-C", str(INSTALLER), "test",
+             "PLATFORM=kind", "PROFILE=dev", "NS=osac", "SUITE=caas", "MAKE=true"],
+            env=self.env, text=True, capture_output=True, timeout=15,
+        )
+        self.assert_success(result)
+        self.assertIn("true -C ../tests/integration/caas test", result.stdout)
+
+    def test_caas_delegation_rejects_unsupported_targets(self):
+        for platform, profile, namespace in (("openshift", "caas-ci", "osac"),
+                                              ("kind", "dev-full", "osac"),
+                                              ("kind", "dev", "other")):
+            with self.subTest(platform=platform, profile=profile, namespace=namespace):
+                result = subprocess.run(
+                    ["make", "--no-print-directory", "-n", "-C", str(INSTALLER), "test",
+                     f"PLATFORM={platform}", f"PROFILE={profile}", f"NS={namespace}",
+                     "SUITE=caas", "MAKE=true"],
+                    env=self.env, text=True, capture_output=True, timeout=15,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("SUITE=caas requires PLATFORM=kind PROFILE=dev NS=osac", result.stderr)
+                self.assertNotIn("-C ../tests/integration/caas test", result.stdout)
+
     def test_compute_storage_phase_uses_real_services_and_only_the_aap_recorder(self):
         result = subprocess.run(
             ["make", "--no-print-directory", "-n", "-C", str(INSTALLER), "test",
@@ -988,9 +1016,16 @@ create_cluster osac-dev config.yaml {shlex.quote(str(self.directory / 'cluster.k
             env=self.env, text=True, capture_output=True, timeout=15,
         )
         self.assert_success(result)
-        self.assertIn("fulfillment-service:it", result.stdout)
-        self.assertIn('container save localhost/fulfillment-service:it > "$tmpfile"', result.stdout)
-        self.assertIn("osac-operator:it", result.stdout)
+        self.assertIn("true test-platform-images", result.stdout)
+        images = subprocess.run(
+            ["make", "--no-print-directory", "-n", "-C", str(INSTALLER), "test-platform-images",
+             "PLATFORM=kind", "PROFILE=dev", "NS=osac", "MAKE=true"],
+            env=self.env, text=True, capture_output=True, timeout=15,
+        )
+        self.assert_success(images)
+        self.assertIn("fulfillment-service:it", images.stdout)
+        self.assertIn('container save localhost/fulfillment-service:it > "$tmpfile"', images.stdout)
+        self.assertIn("osac-operator:it", images.stdout)
         self.assertIn("operator.controllers.computeInstance=true", result.stdout)
         self.assertIn("operator.controllers.storage=true", result.stdout)
         self.assertIn("operator.controllers.volume=false", result.stdout)
@@ -1032,6 +1067,8 @@ create_cluster osac-dev config.yaml {shlex.quote(str(self.directory / 'cluster.k
         infra = installer / "charts/osac-infra"
         infra.mkdir(parents=True)
         shutil.copy(INSTALLER / "Makefile", installer / "Makefile")
+        (installer / "scripts").mkdir()
+        shutil.copy(INSTALLER / "scripts/kind-images.mk", installer / "scripts/kind-images.mk")
         shutil.copy(INSTALLER / "charts/osac-infra/Chart.yaml", infra / "Chart.yaml")
         # One pinned archive per dependency declared in Chart.yaml; the Makefile
         # derives its build targets from the same list.
