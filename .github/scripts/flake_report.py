@@ -5,14 +5,19 @@ import html
 import json
 import math
 import re
+import subprocess
+import time
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 JOB_NAME = re.compile(r"^(Unit|Integration) repetition ([1-9][0-9]*) / (.+) / .+$")
 GROUPS = (("integration", "Integration tests"), ("unit", "Unit tests"))
 SLACK_SECTION_LIMIT = 2800
+TIMEOUT_PREFIX = "The job has exceeded the maximum execution time of"
+ANNOTATION_BUDGET_SECONDS = 120
 FAILED_ICON = "\U0001f534"  # Red circle.
 INCOMPLETE_ICON = "\U0001f7e1"  # Yellow circle.
 PASSED_ICON = "\U0001f7e2"  # Green circle.
@@ -63,6 +68,77 @@ def api_records(pages: object, field: str, issues: list[str]) -> list[dict[str, 
     return [record for page in pages for record in page[field]]
 
 
+def fetch_timeout_annotations(pages: object, run: dict[str, Any], issues: list[str]) -> None:
+    """Enrich cancelled suite jobs within a bounded, read-only API collection pass."""
+    deadline = time.monotonic() + ANNOTATION_BUDGET_SECONDS
+    campaign = urlsplit(run["url"])
+    repository = campaign.path.split("/actions/runs/", 1)[0]
+    api_host = "api.github.com" if campaign.hostname == "github.com" else campaign.hostname
+    api_prefix = "" if campaign.hostname == "github.com" else "/api/v3"
+    seen = set()
+    for job in api_records(pages, "jobs", issues):
+        if (
+            not JOB_NAME.fullmatch(job.get("name", ""))
+            or job.get("status") != "completed"
+            or job.get("conclusion") != "cancelled"
+            or any(job.get(field) != run[field] for field in ("run_id", "run_attempt"))
+            or job.get("head_sha") != run["sha"]
+            or job["id"] in seen
+        ):
+            continue
+        seen.add(job["id"])
+        job.pop("timeout_annotations", None)
+        job["timeout_annotation_error"] = "Annotation collection budget exhausted."
+        check_url = urlsplit(job.get("check_run_url", ""))
+        if (
+            check_url.scheme != "https"
+            or check_url.netloc != api_host
+            or not re.fullmatch(rf"{re.escape(api_prefix + '/repos' + repository)}/check-runs/[0-9]+", check_url.path)
+            or check_url.query
+            or check_url.fragment
+        ):
+            job["timeout_annotation_error"] = "Missing or invalid check-run URL."
+            continue
+        for attempt in range(3):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                response = subprocess.run(
+                    [
+                        "gh",
+                        "api",
+                        "--hostname",
+                        campaign.hostname,
+                        "--paginate",
+                        "--slurp",
+                        f"{check_url.path.removeprefix(api_prefix)}/annotations?per_page=100",
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                    timeout=min(20, remaining),
+                )
+                annotation_pages = json.loads(response.stdout)
+                if (
+                    not isinstance(annotation_pages, list)
+                    or not annotation_pages
+                    or any(
+                        not isinstance(page, list)
+                        or any(not isinstance(item, dict) or not isinstance(item.get("message"), str) for item in page)
+                        for page in annotation_pages
+                    )
+                ):
+                    raise ValueError("Invalid annotation response.")
+                job["timeout_annotations"] = [item["message"] for page in annotation_pages for item in page]
+                job.pop("timeout_annotation_error")
+                break
+            except (OSError, subprocess.SubprocessError, ValueError):
+                job["timeout_annotation_error"] = "Annotation retrieval failed."
+                if attempt < 2:
+                    time.sleep(min(5, max(0, deadline - time.monotonic())))
+
+
 def collect_jobs(
     jobs: list[dict[str, Any]], run: dict[str, Any], expected: dict[tuple[str, str], int], issues: list[str]
 ) -> dict[tuple[str, str], list[dict[str, Any]]]:
@@ -92,11 +168,33 @@ def collect_jobs(
         conclusion = job["status"]
         if conclusion == "completed":
             conclusion = job.get("conclusion") or "unknown"
+        original_conclusion = conclusion
+        timeout_message = None
+        if conclusion == "cancelled":
+            annotations = job.get("timeout_annotations")
+            if (
+                job.get("timeout_annotation_error")
+                or not isinstance(annotations, list)
+                or any(not isinstance(message, str) for message in annotations)
+            ):
+                conclusion = "unverified_cancellation"
+                issues.append(f"Job {job['id']}: timeout classification unavailable; cancellation may be a timeout.")
+            else:
+                timeout_message = next((message for message in annotations if message.startswith(TIMEOUT_PREFIX)), None)
+                if timeout_message:
+                    conclusion = "timed_out"
+        timed_out = conclusion == "timed_out"
+        if timed_out:
+            conclusion = "failure"
         observations.append(
             {
                 "iteration": iteration,
                 "job_id": job["id"],
                 "conclusion": conclusion,
+                "original_conclusion": original_conclusion,
+                "timeout": timed_out,
+                "timeout_message": timeout_message,
+                "annotation_error": job.get("timeout_annotation_error"),
                 "failed_steps": [
                     step["name"] for step in job.get("steps", []) if step.get("conclusion") in ("failure", "timed_out")
                 ],
@@ -120,6 +218,7 @@ def summarize_suite(group: str, name: str, jobs: list[dict[str, Any]], expected:
         "expected": expected,
         "passed": passed,
         "failed": failed,
+        "timeouts": sum(job["timeout"] for job in jobs),
         "other": other,
         "incomplete": other + missing if missing is not None else None,
         "missing": missing,
@@ -199,6 +298,7 @@ def result_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "executions": executions,
         "completed": outcomes["success"] + outcomes["failure"],
         "failed": outcomes["failure"],
+        "timeouts": sum(row["timeouts"] for row in rows),
         "cancelled": outcomes["cancelled"],
         "affected": sum(bool(row["failed"] or row["other"] or row["missing"]) for row in rows),
         "missing": missing,
@@ -217,6 +317,21 @@ def format_overall_failure_risk(report: dict[str, Any]) -> str:
         return "Unavailable"
     risk = 1 - math.prod(1 - suite["failed"] / (suite["passed"] + suite["failed"]) for suite in report["suites"])
     return f"{risk:.1%}"
+
+
+def suite_status_icon(suite: dict[str, Any], summary: dict[str, Any]) -> str:
+    all_cancelled = summary["complete"] and summary["cancelled"] == summary["executions"] == suite["expected"]
+    if all_cancelled:
+        return INCOMPLETE_ICON
+    return status_icon(bool(summary["failed"] or summary["cancelled"]), not summary["complete"])
+
+
+def format_timeout_note(summary: dict[str, Any]) -> str:
+    count = summary["timeouts"]
+    if not count:
+        return ""
+    noun = "timeout" if count == 1 else "timeouts"
+    return "all timeouts" if count == summary["failed"] else f"including {count:,} {noun}"
 
 
 def format_failure_rate(summary: dict[str, Any], *, compact: bool = False) -> str:
@@ -327,11 +442,11 @@ def render_suite_table(report: dict[str, Any]) -> list[str]:
         lines.extend(["", f"### {title}", "", "| Suite | Failed / Completed | Failure rate |", "|---|---:|---:|"])
         for suite in suites:
             summary = result_summary([suite])
-            icon = status_icon(bool(summary["failed"] or summary["cancelled"]), not summary["complete"])
+            icon = suite_status_icon(suite, summary)
             rate = format_failure_rate(summary)
             if suite["failed"]:
                 rate = f"**{rate}**"
-            notes = format_result_notes(summary)
+            notes = " · ".join(note for note in (format_timeout_note(summary), format_result_notes(summary)) if note)
             extra = f" · {notes}" if notes else ""
             lines.append(
                 f"| {icon} {suite_name(suite)} | {suite['failed']:,} / {summary['completed']:,} | {rate}{extra} |"
@@ -355,7 +470,12 @@ def render_execution_tables(report: dict[str, Any]) -> list[str]:
                 )
                 job = f"[View job]({execution['url']})"
                 failed = execution["conclusion"] == "failure"
-                if not failed:
+                if execution["timeout"]:
+                    detail = execution["timeout_message"]
+                    job += " · **Timeout**"
+                    if detail:
+                        job += f" — {html.escape(detail).replace('|', '&#124;')}"
+                elif not failed:
                     job += f" · {execution['conclusion'].replace('_', ' ')}"
                 row = (
                     f"| {group} / {suite_name(suite)} | {execution['iteration']}/{expected} | "
@@ -377,7 +497,7 @@ def render_execution_tables(report: dict[str, Any]) -> list[str]:
                 f"{len(failed_rows):,} failed {executions} across {len(failed_suites)} {suites}. "
                 "Each job and artifact link points to the corresponding execution.",
                 "",
-                "| Suite | Execution | Failed job | Artifacts |",
+                "| Suite | Execution | Job and outcome | Artifacts |",
                 "|---|---:|---|---|",
                 *failed_rows,
             ]
@@ -432,7 +552,9 @@ def render_markdown(report: dict[str, Any]) -> str:
         "",
         "Overall failure risk is calculated from observed suite failure rates using "
         "`1 - product(1 - suite failure rate)`, assuming independent suite outcomes. "
-        "Failure rates use completed executions (success + failure), excluding cancellations. "
+        "Failure rates use completed executions (success + failure). Failures include native job timeouts "
+        "and cancellations explicitly identified by GitHub as exceeding the job execution limit. "
+        "Other cancellations are excluded. Unverified cancellations make the report incomplete. "
         "Risk is unavailable if any suite has no completed executions. "
         "Zero observed failures do not establish zero future risk.",
     ]
@@ -459,7 +581,7 @@ def slack_group_summary(title: str, suites: list[dict[str, Any]]) -> str:
         if result["complete"] and not (result["failed"] or result["cancelled"]):
             clean_count += 1
             continue
-        icon = status_icon(bool(result["failed"] or result["cancelled"]), not result["complete"])
+        icon = suite_status_icon(suite, result)
         rate = format_failure_rate(result, compact=True)
         notes = format_result_notes(result | {"cancelled": 0})
         extra = f" · {notes}" if notes else ""
@@ -467,8 +589,11 @@ def slack_group_summary(title: str, suites: list[dict[str, Any]]) -> str:
             outcome = f"{result['cancelled']:,}/{result['executions']:,} executions cancelled."
         else:
             outcome = f"{result['failed']:,}/{result['completed']:,} executions failed ({rate})"
+            timeout_note = format_timeout_note(result)
+            if timeout_note:
+                outcome += f", {timeout_note}"
             if result["cancelled"]:
-                outcome += f", {result['cancelled']:,} cancelled."
+                outcome += f"; {result['cancelled']:,} cancelled."
         lines.append(f"- {icon} {suite_name(suite, slack=True)}: {outcome}{extra}")
     if clean_count:
         noun = "suite" if clean_count == 1 else "suites"
@@ -541,6 +666,7 @@ def main() -> int:
     parser.add_argument("--artifacts", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--github-output", type=Path)
+    parser.add_argument("--fetch-timeout-annotations", action="store_true")
     parser.add_argument("--run-id", type=int, required=True)
     parser.add_argument("--attempt", type=int, required=True)
     parser.add_argument("--sha", required=True)
@@ -562,6 +688,8 @@ def main() -> int:
         "report_url": args.report_url,
         "started_at": args.started_at,
     }
+    if args.fetch_timeout_annotations:
+        fetch_timeout_annotations(jobs, run, issues)
     report = aggregate(plan, jobs, artifacts, run, issues)
     write_report(report, args.output)
     if args.github_output:

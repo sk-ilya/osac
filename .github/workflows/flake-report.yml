@@ -22,6 +22,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      checks: read
     outputs:
       slack_payload: ${{ steps.generate.outputs.slack_payload }}
     steps:
@@ -119,6 +120,7 @@ jobs:
         id: generate
         if: always()
         env:
+          GH_TOKEN: ${{ github.token }}
           CAMPAIGN_ID: ${{ github.event.workflow_run.id }}
           ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
           SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
@@ -134,7 +136,7 @@ jobs:
             --conclusion "$CONCLUSION" --run-url "$CAMPAIGN_URL" --started-at "$STARTED_AT" \
             --report-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
             --output flake-report \
-            --github-output "$GITHUB_OUTPUT"
+            --github-output "$GITHUB_OUTPUT" --fetch-timeout-annotations
       # Keep the summary and complete JSON results even if the reporter
       # returns an error to flag incomplete results.
       - name: Publish report
